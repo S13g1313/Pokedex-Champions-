@@ -1541,7 +1541,27 @@ document.addEventListener('DOMContentLoaded',async()=>{
   });
   await loadAllPokemon();
   renderFavorites();
+  // Background pre-fetch: warm the Serebii move cache for all Champions base species
+  // so the move filter in the Pokédex grid has accurate Champions-specific learnset data.
+  // Runs silently after everything else loads, batching requests to be gentle on the proxy.
+  prewarmSerebiiCache();
 });
+
+async function prewarmSerebiiCache(){
+  // Only fetch base species (not Megas or alt forms — Serebii uses the base slug for all of those)
+  const toFetch=[...new Set(
+    [...CHAMPIONS_SLUGS]
+      .filter(slug=>!MEGA_MAP[slug]) // exclude Megas
+      .map(slug=>slug.replace(/-(alola|galar|hisui|paldea)(-.*)?$/,'') // strip regional suffixes
+                    .replace(/-(midday|dusk|midnight|blade|shield|hero|male|female|disguised|average|small|large|super|family-of-four|family-of-three|hangry|curly|droopy|stretchy|combat-breed|aqua-breed|blaze-breed).*$/,''))
+  )];
+  const BATCH=8, DELAY=350;
+  for(let i=0;i<toFetch.length;i+=BATCH){
+    const batch=toFetch.slice(i,i+BATCH);
+    await Promise.all(batch.map(slug=>fetchSerebiiMoves(slug).catch(()=>null)));
+    if(i+BATCH<toFetch.length) await new Promise(r=>setTimeout(r,DELAY));
+  }
+}
 
 async function loadAllPokemon(){
   try{
@@ -2293,8 +2313,7 @@ async function applyFilters(){
   if(nameFilter) filtered=filtered.filter(p=>p.name.replace(/-/g,' ').includes(nameFilter)||p.slug===nameFilter);
 
   // Multi-move filter: intersect all selected moves (AND logic)
-  // Uses each Pokémon's own cached movelist when available (accurate to Champions learnsets),
-  // falls back to PokéAPI's learned_by_pokemon only for uncached Pokémon.
+  // Uses Serebii cache (pre-warmed on startup) as primary, then p._moveList, then PokéAPI ids.
   if(selMoves.length){
     document.getElementById('results-grid').innerHTML='<div class="loading-msg">Fetching move data…</div>';
     try{
@@ -2307,10 +2326,18 @@ async function applyFilters(){
       }
       if(filterVersion!==v)return;
       filtered=filtered.filter(p=>{
+        const baseSlug=p.slug.replace(/-(alola|galar|hisui|paldea)(-.*)?$/,'');
         return selMoves.every((mv,idx)=>{
+          // 1. Serebii cache (most accurate — pre-warmed on startup)
+          const serebiiMoves=serebiiMoveCache[p.slug]||serebiiMoveCache[baseSlug];
+          if(serebiiMoves&&serebiiMoves.size>0){
+            return serebiiMoves.has(mv.slug)||serebiiMoves.has(mv.label.toLowerCase().replace(/ /g,'-'));
+          }
+          // 2. Team builder cached movelist
           if(p._moveList&&p._moveList.length){
             return p._moveList.some(m=>m.name===mv.label||m.name.replace(/ /g,'-')===mv.slug);
           }
+          // 3. PokéAPI fallback (cross-game, less accurate)
           return apiIdSets[idx].has(p.id);
         });
       });
