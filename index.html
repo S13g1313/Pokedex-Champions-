@@ -1501,27 +1501,10 @@ const serebiiMoveCache={}; // slug -> Set of Champions move slugs, sourced from 
 // returns every move it has ever learned across all games. Falls back gracefully on failure.
 // URL pattern: serebii.net/pokedex-champions/{slug}/
 async function fetchSerebiiMoves(slug){
-  if(serebiiMoveCache[slug]!==undefined) return serebiiMoveCache[slug];
-  const serebiiSlug=slug.replace(/-(alola|galar|hisui|paldea).*$/,'');
-  const targetUrl=`https://www.serebii.net/pokedex-champions/${serebiiSlug}/`;
-  const proxies=[
-    `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-  ];
-  for(const proxy of proxies){
-    try{
-      const r=await fetch(proxy);
-      if(!r.ok) continue;
-      const html=await r.text();
-      const matches=[...html.matchAll(/attackdex-champions\/([a-z0-9\-]+)\.shtml/gi)];
-      const moves=new Set(matches.map(m=>m[1].toLowerCase()));
-      if(moves.size>0){
-        serebiiMoveCache[slug]=moves;
-        return moves;
-      }
-    }catch(e){ /* try next proxy */ }
-  }
-  serebiiMoveCache[slug]=null;
+  // Serebii pages require JavaScript rendering — the proxy fetch returns the page shell
+  // without the move table content, so parsing always yields zero results.
+  // We rely on the CHAMPIONS_MOVES whitelist (499 moves from the in-game Available Moves list)
+  // cross-referenced against PokéAPI's per-Pokémon learnset instead.
   return null;
 }
 const speciesCache={};
@@ -1541,27 +1524,7 @@ document.addEventListener('DOMContentLoaded',async()=>{
   });
   await loadAllPokemon();
   renderFavorites();
-  // Background pre-fetch: warm the Serebii move cache for all Champions base species
-  // so the move filter in the Pokédex grid has accurate Champions-specific learnset data.
-  // Runs silently after everything else loads, batching requests to be gentle on the proxy.
-  prewarmSerebiiCache();
 });
-
-async function prewarmSerebiiCache(){
-  // Only fetch base species (not Megas or alt forms — Serebii uses the base slug for all of those)
-  const toFetch=[...new Set(
-    [...CHAMPIONS_SLUGS]
-      .filter(slug=>!MEGA_MAP[slug]) // exclude Megas
-      .map(slug=>slug.replace(/-(alola|galar|hisui|paldea)(-.*)?$/,'') // strip regional suffixes
-                    .replace(/-(midday|dusk|midnight|blade|shield|hero|male|female|disguised|average|small|large|super|family-of-four|family-of-three|hangry|curly|droopy|stretchy|combat-breed|aqua-breed|blaze-breed).*$/,''))
-  )];
-  const BATCH=8, DELAY=350;
-  for(let i=0;i<toFetch.length;i+=BATCH){
-    const batch=toFetch.slice(i,i+BATCH);
-    await Promise.all(batch.map(slug=>fetchSerebiiMoves(slug).catch(()=>null)));
-    if(i+BATCH<toFetch.length) await new Promise(r=>setTimeout(r,DELAY));
-  }
-}
 
 async function loadAllPokemon(){
   try{
